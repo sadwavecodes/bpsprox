@@ -7,15 +7,7 @@ import os
 app = Flask(__name__)
 CORS(app)
 
-# 🔐 REQUIRED: set this in Render env vars
-PROXY_SECRET = os.getenv("PROXY_SECRET", "changeme")
-
-# 🔒 Optional safety: block localhost & private networks
-BLOCKED_HOSTS = {
-    "localhost",
-    "127.0.0.1",
-    "0.0.0.0"
-}
+PROXY_SECRET = os.environ.get("PROXY_SECRET", "dev-secret")
 
 
 def is_safe_url(url):
@@ -23,18 +15,17 @@ def is_safe_url(url):
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https"):
             return False
-        if parsed.hostname in BLOCKED_HOSTS:
+        if parsed.hostname in ("localhost", "127.0.0.1"):
             return False
         return True
-    except:
+    except Exception:
         return False
 
 
 @app.route("/api/proxy", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
 def proxy():
-    # 🔐 secret check (prevents public abuse)
-    client_secret = request.headers.get("x-proxy-secret")
-    if client_secret != PROXY_SECRET:
+    # 🔐 basic protection
+    if request.headers.get("x-proxy-secret") != PROXY_SECRET:
         return jsonify({"error": "Unauthorized"}), 401
 
     target_url = request.args.get("url")
@@ -45,31 +36,25 @@ def proxy():
         return jsonify({"error": "Unsafe url"}), 400
 
     try:
-        # Forward almost all headers
-        headers = {
-            key: value
-            for key, value in request.headers
-            if key.lower() not in ["host", "x-proxy-secret", "content-length"]
-        }
+        # Forward headers safely
+        forward_headers = {}
+        for k, v in request.headers.items():
+            if k.lower() not in ["host", "x-proxy-secret", "content-length"]:
+                forward_headers[k] = v
 
-        # Forward request based on method
         resp = requests.request(
             method=request.method,
             url=target_url,
-            headers=headers,
+            headers=forward_headers,
             data=request.get_data(),
             params={k: v for k, v in request.args.items() if k != "url"},
-            timeout=20,
+            timeout=25,
         )
 
-        # Clean response headers
-        excluded = ["content-encoding", "content-length", "transfer-encoding"]
-        response_headers = [
-            (k, v) for k, v in resp.headers.items()
-            if k.lower() not in excluded
-        ]
+        excluded = ["content-encoding", "content-length", "transfer-encoding", "connection"]
+        headers = [(k, v) for k, v in resp.headers.items() if k.lower() not in excluded]
 
-        return Response(resp.content, resp.status_code, response_headers)
+        return Response(resp.content, resp.status_code, headers)
 
     except requests.exceptions.Timeout:
         return jsonify({"error": "Upstream timeout"}), 504
@@ -78,5 +63,5 @@ def proxy():
 
 
 @app.route("/")
-def health():
-    return {"status": "universal proxy alive"}
+def home():
+    return {"status": "proxy running"}
